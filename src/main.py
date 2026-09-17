@@ -7,15 +7,33 @@ import numpy as np
 import h5py
 import matplotlib.pyplot as plt
 
-PATH = "./data/2020-08-10/Preprocessed/Plant1_L1_4.dspkd"
 SUBTRACT_DARK    = False   # subtract stored 2-component background (darkConc @ darkSpectra), probably already done
 APPLY_CORRECTION = False   # multiply by header/correctionFactor (spectral response), probably already done
 N_COMPONENTS     = 5      # fluorophore components to resolve (keep <= maxComponents)
-MAX_ITER         = 50    # MCR-ALS iterations
+MAX_ITER         = 20    # MCR-ALS iterations
 
 def main():
+    # get all the files to process and save paths
+    all_files = []
+    for i in [4, 7, 9]:
+        path = "./data/2020-08-1{}/Preprocessed".format(i)
+        for file in os.listdir(path):
+            save_path = "./result/" + path.split("/")[2] + "/" + file.split(".")[0] + ".png"
+            file_path = path + "/" + file
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            #print(file_path, save_path)
+            all_files.append((file_path, save_path))
+    print(len(all_files))
+    for (file_path, save_path) in all_files:
+        try:
+            run_file(file_path, save_path)
+        except:
+            print("error " + file_path)
+    return
+
+def run_file(file_path, save_path):
     # load data
-    with h5py.File(PATH, "r") as f:
+    with h5py.File(file_path, "r") as f:
         data   = np.asarray(f["data"], dtype=np.float64)             # (pixels, channels)
         wl     = np.asarray(f["header/channelWavelengths"]).ravel()  # (channels,) nm
         corr   = np.asarray(f["header/correctionFactor"]).ravel()    # (channels,)
@@ -86,16 +104,16 @@ def main():
         ax[1, k].plot(wl, S[k])
         ax[1, k].set_xlabel("emission (nm)")
         ax[1, k].set_ylabel("intensity" if k == 0 else "")
-    fig.suptitle("MCR-ALS: abundance maps (top) and pure spectra (bottom)")
+    fig.suptitle(save_path.split("/")[-1] + " " + "MCR-ALS: abundance maps (top) and pure spectra (bottom)")
     fig.tight_layout()
-    fig.savefig("mcr_result.png", dpi=150)
-    print("saved mcr_result.png")
-    plt.show()
+    fig.savefig(save_path, dpi=150)
+    print("saved" + save_path)
+    #plt.show()
 
 # `cube`, `maps`, `S`, `wl` are now in memory for further analysis.
 
 # helper functions
-def check_data():
+def check_data(PATH):
     with h5py.File(PATH, "r") as f:
         print("=== structure ===")
         f.visititems(show)
