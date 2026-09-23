@@ -15,8 +15,8 @@ MAX_ITER         = 20    # MCR-ALS iterations
 def main():
     # get all the files to process and save paths
     all_files = []
-    for i in [4, 7, 9]:
-        path = "./data/2020-08-1{}/Preprocessed".format(i)
+    for i in ["02-24", "03-02", "03-09", "03-16", "03-23"]:
+        path = "./data/2021-{}/Preprocessed".format(i)
         for file in os.listdir(path):
             save_path = "./result/" + path.split("/")[2] + "/" + file.split(".")[0] + ".png"
             file_path = path + "/" + file
@@ -27,6 +27,7 @@ def main():
     for (file_path, save_path) in all_files:
         try:
             run_file(file_path, save_path)
+            print(file_path, save_path)
         except:
             print("error " + file_path)
     return
