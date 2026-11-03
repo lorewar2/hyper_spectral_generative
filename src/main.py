@@ -6,31 +6,73 @@ from pymcr.constraints import ConstraintNonneg
 import numpy as np
 import h5py
 import matplotlib.pyplot as plt
+import pandas as pd
+import tifffile
 
 SUBTRACT_DARK    = False   # subtract stored 2-component background (darkConc @ darkSpectra), probably already done
 APPLY_CORRECTION = False   # multiply by header/correctionFactor (spectral response), probably already done
-N_COMPONENTS     = 5      # fluorophore components to resolve (keep <= maxComponents)
-MAX_ITER         = 20    # MCR-ALS iterations
+N_COMPONENTS     = 4      # fluorophore components to resolve (keep <= maxComponents)
+MAX_ITER         = 200    # MCR-ALS iterations
 
 def main():
     # get all the files to process and save paths
-    all_files = []
-    for i in ["02-24", "03-02", "03-09", "03-16", "03-23"]:
-        path = "./data/2021-{}/Preprocessed".format(i)
-        for file in os.listdir(path):
-            save_path = "./result/" + path.split("/")[2] + "/" + file.split(".")[0] + ".png"
-            file_path = path + "/" + file
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            #print(file_path, save_path)
-            all_files.append((file_path, save_path))
-    print(len(all_files))
-    for (file_path, save_path) in all_files:
-        try:
-            run_file(file_path, save_path)
-            print(file_path, save_path)
-        except:
-            print("error " + file_path)
+    # all_files = []
+    # for i in ["02-24", "03-02", "03-09", "03-16", "03-23"]:
+    #     path = "./data/2021-{}/Preprocessed".format(i)
+    #     for file in os.listdir(path):
+    #         save_path = "./result/" + path.split("/")[2] + "/" + file.split(".")[0] + ".png"
+    #         file_path = path + "/" + file
+    #         os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    #         #print(file_path, save_path)
+    #         all_files.append((file_path, save_path))
+    # print(len(all_files))
+    # for (file_path, save_path) in all_files:
+    #     try:
+    #         run_file(file_path, save_path)
+    #         print(file_path, save_path)
+    #     except:
+    #         print("error " + file_path)
+    # for one file
+    run_file("./data/Plant1_L1_13.dspkd", "./data/Plant1_L1_13.png")
+    #draw_ground_truth_img("./data/11_chl_b.tiff", "./data/11_chl_a.tiff", "./data/11_ps1.tiff", "./data/8_10.csv",)
     return
+
+def draw_ground_truth_img(chlb_tiff, chla_tiff, ps1_tiff, csv_file, save_path=None):
+    # csv header: wavelength,baseline,ChlB,ChlA,PSI,Spectrum4
+    df = pd.read_csv(csv_file)
+    df.columns = df.columns.str.strip()          # guard against stray header spaces
+    wl = df['wavelength'].values
+
+    comps = [('Chl b', 'ChlB', '#2E9B2E'),       # label, csv column, line color
+             ('Chl a', 'ChlA', '#E8352B'),
+             ('PSI',   'PSI',  '#2246D6')]
+
+    # abundance maps (float32 MCR-result TIFFs)
+    maps = [tifffile.imread(p) for p in (chlb_tiff, chla_tiff, ps1_tiff)]
+
+    # 2 x 3 grid: spectra on top, maps below, aligned by component
+    fig, axes = plt.subplots(2, 3, figsize=(12, 7))
+
+    for j, (label, col, color) in enumerate(comps):
+        # top row: the component's abundance map
+        im = axes[0, j].imshow(maps[j], cmap='inferno')
+        axes[0, j].axis('off')
+        fig.colorbar(im, ax=axes[0, j], fraction=0.046, pad=0.04)
+        # bottom row: wavelength vs component spectrum
+        axes[1, j].plot(wl, df[col].values, color=color, lw=1.5)
+        axes[1, j].set_title(label)
+        axes[1, j].set_xlabel('wavelength (nm)')
+        axes[1, j].set_ylim(0, 0.26)
+        if j == 0:
+            axes[1, j].set_ylabel('intensity (a.u.)')
+
+
+    fig.suptitle('Ground truth: component spectra (top) and abundance maps (bottom)')
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150)
+    plt.show()
+    return fig
 
 def run_file(file_path, save_path):
     # load data
@@ -105,6 +147,7 @@ def run_file(file_path, save_path):
         ax[1, k].plot(wl, S[k])
         ax[1, k].set_xlabel("emission (nm)")
         ax[1, k].set_ylabel("intensity" if k == 0 else "")
+        ax[1, k].set_ylim(0, 400)
     fig.suptitle(save_path.split("/")[-1] + " " + "MCR-ALS: abundance maps (top) and pure spectra (bottom)")
     fig.tight_layout()
     fig.savefig(save_path, dpi=150)
