@@ -70,7 +70,8 @@ class BiCrossAttnLayer(nn.Module):
 
 # =====================================================================
 # Unmixing model:  D (N x C) -> C (N x K), S (K x C), D_hat = C @ S
-#   S_init: starting spectra (K x C); fully learnable afterwards
+#   S_init (optional): starting spectra (K x C); fully learnable afterwards
+#   S_init=None      : spectra learned from scratch by the component tokens
 # =====================================================================
 def inv_softplus(x, eps=1e-6):
     x = torch.clamp(x, min=eps)
@@ -78,19 +79,22 @@ def inv_softplus(x, eps=1e-6):
 
 
 class BiXTUnmix(nn.Module):
-    def __init__(self, n_channels, n_components, S_init, dim=128, depth=4, n_heads=4):
+    def __init__(self, n_channels, n_components, S_init=None, dim=128, depth=4, n_heads=4, seed=0):
         super().__init__()
         self.pix_embed   = nn.Sequential(nn.Linear(n_channels, dim), nn.GELU(), nn.Linear(dim, dim))
         self.comp_tokens = nn.Parameter(torch.randn(n_components, dim) * 0.02)
         self.layers      = nn.ModuleList([BiCrossAttnLayer(dim, n_heads) for _ in range(depth)])
         self.norm_c      = nn.LayerNorm(dim)
         self.norm_p      = nn.LayerNorm(dim)
-        self.to_spectra  = nn.Linear(dim, n_channels)    # learned correction on top of the base
+        self.to_spectra  = nn.Linear(dim, n_channels)
         self.to_conc     = nn.Linear(dim, n_components)
 
+        if S_init is None:                                   # random start if none given
+            S_init = random_init(n_components, n_channels, seed=seed)
         S_init = torch.as_tensor(S_init, dtype=torch.float32)
         assert S_init.shape == (n_components, n_channels), \
             f'S_init must be ({n_components}, {n_channels}), got {tuple(S_init.shape)}'
+        self.S_init = S_init.clone()                         # kept for plotting
 
         # learnable base spectra, starting at S_init (stored in softplus space)
         self.S_base = nn.Parameter(inv_softplus(S_init))
@@ -106,8 +110,11 @@ class BiXTUnmix(nn.Module):
         comp = self.comp_tokens        # (K, dim)
         for layer in self.layers:
             comp, pix = layer(comp, pix)
-        S = F.softplus(self.S_base + self.to_spectra(self.norm_c(comp)))   # (K, C)
-        C = F.softplus(self.to_conc(self.norm_p(pix)))                     # (N, K)
+        logits = self.to_spectra(self.norm_c(comp))                  # (K, C)
+        if self.S_base is not None:
+            logits = logits + self.S_base
+        S = F.softplus(logits)                                       # (K, C)
+        C = F.softplus(self.to_conc(self.norm_p(pix)))               # (N, K)
         return C @ S, C, S
 
 
@@ -134,25 +141,36 @@ def unit_norm(S):
 
 
 def nmf_init(D, n_components, seed=0):
-    nmf = NMF(n_components=n_components, init="nndsvda", max_iter=1, random_state=seed)
+    nmf = NMF(n_components=n_components, init="nndsvda", max_iter=1_000, random_state=seed)
     _ = nmf.fit_transform(D)
     S0 = nmf.components_                 # (k, channels) initial pure spectra
     return unit_norm(S0)
 
+def random_init(n_components, n_channels, smooth_sigma=10.0, seed=0):
+    """Random smooth, positive, unit-length starting spectra (K x C)."""
+    rng = np.random.default_rng(seed)
+    S = rng.random((n_components, n_channels))
+    # smooth along wavelength so spectra aren't jagged noise
+    half = int(3 * smooth_sigma)
+    x = np.arange(-half, half + 1)
+    kernel = np.exp(-0.5 * (x / smooth_sigma) ** 2)
+    kernel /= kernel.sum()
+    S = np.stack([np.convolve(np.pad(s, half, mode='reflect'), kernel, mode='valid') for s in S])
+    return unit_norm(S)
 
 # =====================================================================
 # Training
 # =====================================================================
-def train_unmix(D, n_components, S_init, dim=128, depth=4, n_heads=4,
+def train_unmix(D, n_components, S_init=None, dim=128, depth=4, n_heads=4,
                 epochs=3000, lr=1e-3, weight_decay=0.0,
                 w_smooth=1e-3, w_sparse=0.0, w_unit=1e-2, poisson=False,
                 seed=0, device=None, print_every=100):
     torch.manual_seed(seed); np.random.seed(seed)
     device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f'Training on {device}')
+    print(f'Training on {device} | init: {"S_init" if S_init is not None else "from scratch"}')
 
     D = torch.as_tensor(D, dtype=torch.float32, device=device)
-    model = BiXTUnmix(D.shape[1], n_components, S_init, dim, depth, n_heads).to(device)
+    model = BiXTUnmix(D.shape[1], n_components, S_init, dim, depth, n_heads, seed=seed).to(device)
 
     opt   = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs)
@@ -226,7 +244,7 @@ def plot_results(C, S, wl, nRows, nCols, S_init=None, names=None, save_path=None
         axes[0, k].set_title(names[k]); axes[0, k].axis('off')
         fig.colorbar(im, ax=axes[0, k], fraction=0.046, pad=0.04)
         if S_init is not None:
-            axes[1, k].plot(wl, S_init[k], lw=1.0, ls='--', color='grey', label='NMF start')
+            axes[1, k].plot(wl, S_init[k], lw=1.0, ls='--', color='grey', label='init')
         axes[1, k].plot(wl, S[k], lw=1.3, label='learned')
         axes[1, k].set_xlabel('wavelength (nm)')
     axes[1, 0].set_ylabel('intensity (unit-norm)')
@@ -242,8 +260,9 @@ def plot_results(C, S, wl, nRows, nCols, S_init=None, names=None, save_path=None
 # Main
 # =====================================================================
 def main():
-    file_path    = "./data/Plant1_L1_13.dspkd"
-    N_COMPONENTS = 4
+    file_path     = "./data/Plant1_L1_13.dspkd"
+    N_COMPONENTS  = 4
+    USE_NMF_INIT  = True      # False -> learn spectra from scratch
 
     cube, wl = load_cube(file_path, subtract_dark=False, apply_correction=False)
     nRows, nCols, nWav = cube.shape
@@ -252,26 +271,28 @@ def main():
     scale = D.max()                  # global scale only -> stays non-negative
     D_n = D / scale
 
-    S_init = nmf_init(D_n, N_COMPONENTS)     # NMF start, then learned by the network
+    S_init = nmf_init(D_n, N_COMPONENTS) if USE_NMF_INIT else None
 
     model, C, S, loss_list = train_unmix(
-        D_n, N_COMPONENTS, S_init,
+        D_n, N_COMPONENTS, S_init=S_init,
         dim=128, depth=4, n_heads=4,
-        epochs=3000, lr=1e-3,
+        epochs=3000, lr=2e-2,
         w_smooth=1e-3, w_sparse=0.0, w_unit=1e-2,
-        poisson=True,
+        poisson=True, seed = 3
     )
 
     C = C * scale                    # abundances back in original intensity units
 
-    np.save('bixt_C.npy', C)         # (N, K)
-    np.save('bixt_S.npy', S)         # (K, C)
-    np.savetxt('bixt_spectra.csv', np.column_stack([wl, S.T]), delimiter=',',
+    tag = 'nmf' if USE_NMF_INIT else 'scratch'
+    np.save(f'bixt_C_{tag}.npy', C)          # (N, K)
+    np.save(f'bixt_S_{tag}.npy', S)          # (K, C)
+    np.savetxt(f'bixt_spectra_{tag}.csv', np.column_stack([wl, S.T]), delimiter=',',
                header='wavelength_nm,' + ','.join(f'comp{k + 1}' for k in range(N_COMPONENTS)),
                comments='')
-    np.savetxt('bixt_loss.txt', loss_list)
+    np.savetxt(f'bixt_loss_{tag}.txt', loss_list)
 
-    plot_results(C, S, wl, nRows, nCols, S_init=S_init, save_path='bixt_unmix.png')
+    S_start = model.S_init.numpy()          # NMF or random, whichever was used
+    plot_results(C, S, wl, nRows, nCols, S_init=S_start, save_path=f'bixt_unmix_{tag}.png')
 
 
 if __name__ == '__main__':

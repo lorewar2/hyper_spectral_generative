@@ -133,25 +133,31 @@ def run_file(file_path, save_path):
     S = mcr.ST_opt_                      # (k, channels) resolved pure emission spectra
     print(f"MCR lack-of-fit: {mcr.err[-1]:.4g}   over {len(mcr.err)} iterations")
 
+    # relative residual ||D - CS|| / ||D||
+    rel_resid = np.linalg.norm(D - C @ S) / np.linalg.norm(D)
+    print(f"relative residual ||D - CS|| / ||D|| = {rel_resid:.4f}")
+    
     # per-component abundance images (same reshape convention as the cube)
     maps = C.reshape(nRows, nCols, N_COMPONENTS, order="F")
 
     # ---- plot ------------------------------------------------------------------
-    
     fig, ax = plt.subplots(2, N_COMPONENTS, figsize=(3 * N_COMPONENTS, 6),
-                        squeeze=False)
+                           squeeze=False)
     for k in range(N_COMPONENTS):
         ax[0, k].imshow(maps[:, :, k], cmap="inferno")
         ax[0, k].set_title(f"Component {k+1}")
         ax[0, k].axis("off")
-        ax[1, k].plot(wl, S[k])
+        ax[1, k].plot(wl, S0[k], ls="--", lw=1.0, color="grey", label="NMF initial")
+        ax[1, k].plot(wl, S[k], lw=1.3, label="MCR-ALS")
         ax[1, k].set_xlabel("emission (nm)")
         ax[1, k].set_ylabel("intensity" if k == 0 else "")
         ax[1, k].set_ylim(0, 400)
+    ax[1, 0].legend(frameon=False, fontsize=8)
     fig.suptitle(save_path.split("/")[-1] + " " + "MCR-ALS: abundance maps (top) and pure spectra (bottom)")
     fig.tight_layout()
     fig.savefig(save_path, dpi=150)
     print("saved" + save_path)
+    plt.show()
     #plt.show()
 
 # `cube`, `maps`, `S`, `wl` are now in memory for further analysis.
