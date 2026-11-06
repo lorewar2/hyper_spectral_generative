@@ -121,8 +121,11 @@ def run_file(file_path, save_path):
 
 
     nmf = NMF(n_components=N_COMPONENTS, init="nndsvda", max_iter=500, random_state=0)
-    _  = nmf.fit_transform(D)
+    W0  = nmf.fit_transform(D)
     S0 = nmf.components_                 # (k, channels) initial pure spectra
+
+    nmf_resid = np.linalg.norm(D - W0 @ S0) / np.linalg.norm(D)
+    print(f"NMF init  relative residual ||D - CS|| / ||D|| = {nmf_resid:.4f}")
 
     mcr = McrAR(max_iter=MAX_ITER, c_regr="NNLS", st_regr="NNLS",
                 c_constraints=[ConstraintNonneg()],
@@ -136,6 +139,7 @@ def run_file(file_path, save_path):
     # relative residual ||D - CS|| / ||D||
     rel_resid = np.linalg.norm(D - C @ S) / np.linalg.norm(D)
     print(f"relative residual ||D - CS|| / ||D|| = {rel_resid:.4f}")
+
     
     # per-component abundance images (same reshape convention as the cube)
     maps = C.reshape(nRows, nCols, N_COMPONENTS, order="F")
